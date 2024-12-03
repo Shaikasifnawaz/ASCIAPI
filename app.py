@@ -9,8 +9,10 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from heapq import nlargest
 
+# Load environment variables
 load_dotenv()
 
+# Configure Gemini API
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 generation_config = {
@@ -30,10 +32,9 @@ chat_session = model.start_chat(history=[])
 
 # Flask app setup
 app = Flask(__name__)
-
-# Enable CORS for the entire app
 CORS(app)
 
+# Global variables
 pdf_texts = {}
 file_details = []
 user_query_history = {}
@@ -41,12 +42,11 @@ user_query_history = {}
 # Directory containing your files
 FILES_DIRECTORY = 'files'  # Change this to your local directory path
 
-# Load all files from the local directory
-def load_all_files():
+# Load all files automatically during app initialization
+def load_all_files_on_startup():
     global pdf_texts, file_details
     file_details = []
 
-    # Iterate through files in the directory
     for root, dirs, files in os.walk(FILES_DIRECTORY):
         for file_name in files:
             file_path = os.path.join(root, file_name)
@@ -57,7 +57,7 @@ def load_all_files():
                     "file_path": file_path,
                     "mime_type": mime_type
                 })
-                
+
                 try:
                     if mime_type == 'application/pdf':
                         file_text = extract_text_from_pdf(file_path)
@@ -69,8 +69,6 @@ def load_all_files():
                     pdf_texts[file_path] = file_text
                 except Exception as e:
                     print(f"Error processing file {file_name}: {e}")
-
-    return file_details
 
 # Extract text from PDF file
 def extract_text_from_pdf(file_path):
@@ -113,25 +111,21 @@ def rank_documents(query):
 def generate_follow_up_questions(relevant_text, previous_questions):
     follow_up_questions = []
 
-    # Clean the text first to handle potential formatting issues
-    relevant_text = re.sub(r'(\d+)[,;](\d+)', r'\1 \2', relevant_text)  # Remove commas within numbers
-    relevant_text = re.sub(r'\s+', ' ', relevant_text)  # Clean excessive whitespaces
+    relevant_text = re.sub(r'(\d+)[,;](\d+)', r'\1 \2', relevant_text)
+    relevant_text = re.sub(r'\s+', ' ', relevant_text)
 
-    # Split text into sentences using regex to better capture sentence boundaries
     sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|\!)\s', relevant_text)
 
     for sentence in sentences:
         sentence = sentence.strip()
 
-        if len(sentence) > 20:  # Ensure it's not too short
-            # Extract key concepts (first 5 words of each sentence)
+        if len(sentence) > 20:
             words = sentence.split()
             question = "What about " + " ".join(words[:5]) + "?"
             
-            if question not in previous_questions:  # Ensure the question is unique
+            if question not in previous_questions:
                 follow_up_questions.append(question)
         
-        # Stop after 3 questions
         if len(follow_up_questions) >= 3:
             break
     
@@ -146,20 +140,16 @@ def chatbot_respond(user_query, session_id):
         for idx in ranked_docs:
             relevant_text += list(pdf_texts.values())[idx] + "\n"
 
-        # Retrieve the previous follow-up questions from history for this session
         previous_questions = user_query_history.get(session_id, {}).get("follow_up_questions", [])
 
-        # Generate follow-up questions based on the new relevant text
         follow_up_questions = generate_follow_up_questions(relevant_text, previous_questions)
 
-        # Store user query, follow-up questions, and relevant context for this session
         user_query_history[session_id] = {
             "query": user_query,
             "follow_up_questions": follow_up_questions,
-            "relevant_text": relevant_text  # Store the latest relevant text for future queries
+            "relevant_text": relevant_text
         }
 
-        # Define system prompt for the assistant's response
         system_prompt = f"""
        You are a knowledgeable assistant. Your role is to provide accurate and concise responses based only on the information in the provided documents.
         User's Question: "{user_query}"
@@ -168,13 +158,11 @@ def chatbot_respond(user_query, session_id):
         Answer the user's question in a professional tone, using no more than 100 words. Do not include any information that is not found in the documents.
         """
 
-        # Send the request to Gemini API
         response = chat_session.send_message(system_prompt)
         return response.text.strip(), follow_up_questions
 
     except Exception as e:
         return f"Error processing your query: {str(e)}", []
-
 
 # Flask routes
 @app.route('/chat', methods=['POST'])
@@ -188,13 +176,7 @@ def chat():
     bot_response, follow_up_questions = chatbot_respond(user_query, session_id)
     return jsonify({"response": bot_response, "follow_up_questions": follow_up_questions})
 
-@app.route('/load_pdfs', methods=['GET'])
-def load_pdfs_endpoint():
-    try:
-        file_details = load_all_files()  
-        return jsonify({"files": file_details, "message": "All files loaded successfully!"}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
 if __name__ == '__main__':
+    # Load files automatically during app startup
+    load_all_files_on_startup()
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
